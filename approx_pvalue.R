@@ -1,5 +1,9 @@
-library(dplyr)
-library(stats)
+require(dplyr)
+require(stats)
+require(pracma)
+require(doParallel)
+
+library(tictoc)
 
 # Erstellung einer Partitionsfolge (degenerierend, verfeinernd) -----------
 
@@ -29,9 +33,7 @@ partition_seq <- function(S, pieces = 2, max_iterations = 2000) {
 
 # Expected Euler Characteristic via Gaussian Kinematic Formular -----------
 
-tGKF <- function(S, data, basisEC, level) {
-    # Euler Charakteristik der Grundmenge
-    chi <- basisEC
+tGKF <- function(S, data, level, basisEC = 1) {
     
     # EC Dichten p_0 und p_1
     degree = ncol(data) - 1
@@ -46,13 +48,10 @@ tGKF <- function(S, data, basisEC, level) {
         (data - rowSums(data) / ncol(data)) / apply(data, 1, sd)
     
     if (length(S) > 1) {
-        # df.residuals <- # Differenzenquotient
-        #     ((rbind(residuals[-1,], residuals[nrow(residuals),]) - residuals) / diff(S)) %>%
-        #     t() %>% apply(2, var) %>% sqrt()
         df.residuals <- apply(residuals, 2, function(values) {
             func <- stats::splinefun(S, values, method = "natural")
-            deriv <- func(S, deriv = 1)
-        }) %>% apply(1, sd)
+            pracma::fderiv(func, S, method = "central")
+        }) %>% apply(1, stats::sd)
         L1 <- # Trapezregel
             sum(diff(S) / 2 * (df.residuals[-length(df.residuals)] + df.residuals[-1]))
     } else {
@@ -61,6 +60,33 @@ tGKF <- function(S, data, basisEC, level) {
     
     # Bestimme die EEC
     p0 * L0 + p1 * L1
+}
+
+# Multiplier Bootstrap -----------
+mBoot <- function(S, data, level, iter = 100) {
+    # Residuen
+    samplesize = ncol(data)
+    residuals <-
+        sqrt(samplesize / (samplesize - 1)) * (data - rowSums(data) / samplesize)
+    
+    # Standardnormalverteilte Multiplier
+    g <- rnorm(samplesize * iter) %>% matrix(samplesize, iter)
+    
+    # Approximation der bedingten Wahrscheinlichkeit der Summe gewichteter Residuen
+    cluster <- parallel::makeCluster(parallel::detectCores() - 1)
+    doParallel::registerDoParallel(cluster)
+    
+    mboot.distr <- foreach::foreach(i = 1:iter, .combine = "c") %dopar% {
+        # Standardabweichung nach Anwendung der Multiplier
+        sd.gX <- apply(t(t(data) * g[,i]), 1, sd)
+        # Maximum der Summen gewichteter Residuen über der Grundmenge
+        max(sqrt(samplesize) ^ (-1) * colSums(t(residuals / sd.gX) * g[,i]))
+    }
+    parallel::stopCluster(cluster)
+    
+    # TODO: Richtigkeit checken
+    length(mboot.distr[mboot.distr >= level]) / length(mboot.distr)
+    
 }
 
 
@@ -88,14 +114,15 @@ ConfSet <- function(data,
                     S,
                     partitions,
                     alpha,
-                    level){
+                    level,
+                    pmethod = "tgkf"){
     
     # Initialisierungen ----
     samplesize <- ncol(data)
-    t.statistic <- - (rowSums(data) - level) / sqrt(samplesize) / apply(data, 1, sd)
+    t.statistic <- - sqrt(samplesize) * (rowSums(data)/samplesize - level) / apply(data, 1, sd)
     
     U <- c()
-    
+
     # Aussere Schleife: Loop über die Folge an Partitionen ----
     for (partS in partitions) {
         # Reduktion der aktuell betrachteten Partition auf jene Teilmengen,
@@ -105,7 +132,6 @@ ConfSet <- function(data,
         if (all(sapply(partS, is.null))) break
         
         N <- length(partS)
-        
         # Innere Schleife: Berechnung von U_n nach Partition partS^*_n ----
         
         # Berechnung und Sortierung der realisierten Werte der Teststatistik
@@ -119,80 +145,32 @@ ConfSet <- function(data,
             lapply(1:N, function(i) {
                 partS[sortorder[i:N]] %>% unlist() %>% unname() %>% sort()
             })
-        
+
         # Berechnung der p-Werte
-        accept.index = 0
-        for (i in 1:N) {
-            basisEC <- 1    # EC von S = [0,1]
-            pvalue <- tGKF(sortedUnions[[i]],
-                           data[S %in% sortedUnions[[i]],],
-                           basisEC,
-                           teststatistics[i]) %>% unname()
+        accept.index = 1
+        for (i in N:1) {
+            if (pmethod == "tgkf") {
+                pvalue <- tGKF(sortedUnions[[i]],
+                               data[S %in% sortedUnions[[i]], ],
+                               teststatistics[i],
+                               basisEC = 1) %>% unname()
+            } else if (pmethod == "mboot") {
+                pvalue <- mBoot(sortedUnions[[i]],
+                                data[S %in% sortedUnions[[i]], ],
+                                teststatistics[i]) %>% unname()
+            }
+            
             # Akzeptiere V_k, wenn p(x_k, V_k) >= alpha
-            if (pvalue >= alpha){
-                accept.index <- i
+            if (pvalue < alpha) {
+                accept.index <- ifelse(i == N, 0, i + 1)
                 break
             }
         }
-        
+
         # Erweitere U_n = U_{n-1} + V_k
         if (accept.index > 0) U <- sort(union(U, sortedUnions[[accept.index]]))
 
     }
-    
-    return(U)
-}
 
-ConfSet2 <- function(data,
-                    S,
-                    partitions,
-                    alpha,
-                    level){
-    
-    # Initialisierungen ----
-    samplesize <- ncol(data)
-    t.statistic <- - (rowSums(data) - level) / sqrt(samplesize) / apply(data, 1, sd)
-    
-    U <- c()
-    
-    # Aussere Schleife: Loop über die Folge an Partitionen ----
-    for (partS in partitions) {
-        # Reduktion der aktuell betrachteten Partition auf jene Teilmengen,
-        # die zuvor noch nicht zu U gezaehlt wurden: partS^*_n = partS_n \ U_{n-1}
-        partS <- lapply(partS, function(vec) if (!all(vec %in% U)) vec) %>%
-            Filter(Negate(is.null), .)
-        if (all(sapply(partS, is.null))) break
-        
-        N <- length(partS)
-        
-        # Innere Schleife: Berechnung von U_n nach Partition partS^*_n ----
-        
-        # Berechnung und Sortierung der realisierten Werte der Teststatistik
-        teststatistics <- lapply(partS, function(vec) t.statistic[S %in% vec] %>% max()) %>%
-            unlist()
-        sortorder <- order(teststatistics, decreasing = T)
-        teststatistics <- sort(teststatistics, decreasing = T)
-        
-        # Vereinigungen V_k ab dem k-ten Partitionselement (geordnet wie Teststatisik)
-        sortedUnions <-
-            lapply(1:N, function(i) {
-                partS[sortorder[i:N]] %>% unlist() %>% unname() %>% sort()
-            })
-        
-        # Berechnung der p-Werte
-        basisEC <- 1    # EC von S = [0,1]
-        pvalues <- sapply(1:N, function(i){
-            tGKF(sortedUnions[[i]],
-                 data[S %in% sortedUnions[[i]],],
-                 basisEC,
-                 teststatistics[i])
-        })
-
-        # Akzeptiere V_k, wenn p(x_k, V_k) >= alpha
-        if (any(pvalues >= alpha)) {
-            U <- sort(union(U, sortedUnions[[min(which(pvalues >= alpha))]]))
-        }
-    }
-    
     return(U)
 }

@@ -1,16 +1,17 @@
-library(dplyr)
-library(mvtnorm)
-library(tidyverse)
-library(reshape2)
-library(ggplot2)
-library(microbenchmark)
+require(dplyr)
+require(mvtnorm)
+require(tidyverse)
+require(reshape2)
+require(ggplot2)
+require(doParallel)
+require(microbenchmark)
 
 theme_set(theme_light())
 
 # Generieren eines Zufallsprozesses X(s) = mu(s) + sigma(s)*epsilon(s) --------
 
 mu <- function(S) {
-    sin(S * 2 * pi) * 3
+    sin(S * 5 * pi) * 2 * S
 } # Erwartungswertfunktion
 
 sigma <- function(S){
@@ -22,7 +23,7 @@ eps <- function(S) {
 } # Fehlerprozess
 
 linearModell <- function(n, S, mu, eps) {
-    mu(S) + sigma(S) * t(rmvnorm(n, sigma = eps(S)))
+    mu(S) + sigma(S) * t(mvtnorm::rmvnorm(n, sigma = eps(S)))
 } # Lineares Modell
 
 
@@ -31,9 +32,9 @@ linearModell <- function(n, S, mu, eps) {
 #### Initialisierung globaler Variablen -----------------------------------
 
 randomseed <- 1
-samplesize.max <- 200
-iterations <- 1000
-gridpoints <- 200               # Anzahl equidistanter Gitterpunkte
+samplesize.max <- 500
+iterations <- 100
+gridpoints <- 500               # Anzahl equidistanter Gitterpunkte
 
 alpha <- 0.05
 level <- 0                      # Grenzwert aus der Null-Hypothese
@@ -46,13 +47,17 @@ partitions <- partition_seq(S, pieces = 2)  # Folge von Partitionen (degeneriere
 set.seed(randomseed)
 
 # Realisierungen von X
-data.all <- lapply(1:iterations, function(i) {
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+data.all <- foreach(i = 1:iterations) %dopar% {
     data.frame(linearModell(samplesize.max, S, mu, eps))
-})
+}
+stopCluster(cluster)
 data.mu <- data.frame(S = S, Erwartungswert = mu(S))
+S0 = S[mu(S) > level]
 
 # Darstellung von Realisierungen
-data.plot <- melt(
+data.plot <- reshape2::melt(
     data.frame(S = S, data.all[[1]])[, 1:10],
     id.vars = "S",
     variable.name = 'Sample',
@@ -66,25 +71,35 @@ p + geom_line(data = data.plot, aes(S, Wert, colour = Sample), alpha = 0.5) +
 
 #### Konstruktion --------------------------------------------------
 
-# U <- ConfSet(data, S, partitions, alpha, level)
-# cat("Genauigkeit: ", length(U[!(U %in% S[mu(S) > level])]) / length(U))
+U <- ConfSet(data.all[[6]], S, partitions, alpha, level, pmethod = "mboot")
+cat("S0 nicht in U: ", length( S0[ !(S0 %in% U)] ) / length(S0),
+    "\nU nicht in S0: ", length( U[ !(U %in% S0)] ) / length(U))
 
 # mbm <- microbenchmark(
-#     V1 = ConfSet(data, S, partitions, alpha, level),
-#     V2 = ConfSet2(data, S, partitions, alpha, level),
+#     V1 = ConfSet(data.all[[1]], S, partitions, alpha, level),
+#     V2 = ConfSet2(data.all[[1]], S, partitions, alpha, level),
 #     times = 10
 # )
 # 
 # autoplot(mbm)
 
-samplesize.list <- c(10,20,50,100,150,200)
-
-results <- sapply(samplesize.list, function(N){
-    results.U <- lapply(data.all, function(data) ConfSet(data[,1:N], S, partitions, alpha, level))
-    fullcovered <- sapply(results.U, function(U) all(S[data.mu$Erwartungswert > level] %in% U))
-    
-    covering.rate <- length(fullcovered[fullcovered == T]) / length(fullcovered)
-})
-
+# samplesize.list <- c(10,50,100,200,500)
+# 
+# results <- sapply(samplesize.list, function(N) {
+#     cluster <- makeCluster(detectCores() - 1)
+#     registerDoParallel(cluster)
+#     results.U <-
+#         foreach(data = data.all, .export = ls(globalenv()), .packages = c("dplyr", "stats")) %dopar% {
+#             ConfSet(data[, 1:N], S, partitions, alpha, level)
+#         }
+#     stopCluster(cluster)
+# 
+#     fullcovered <-
+#         sapply(results.U, function(U)
+#             all(S[data.mu$Erwartungswert > level] %in% U))
+#     covering.rate <-
+#         length(fullcovered[fullcovered == T]) / length(fullcovered)
+# 
+# })
 
 
