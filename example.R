@@ -11,7 +11,7 @@ theme_set(theme_light())
 # Generieren eines Zufallsprozesses X(s) = mu(s) + sigma(s)*epsilon(s) --------
 
 mu <- function(S) {
-    sin(S * 5 * pi) * 2 * S
+    sin(S * 5 * pi) * 5 * S
 } # Erwartungswertfunktion
 
 sigma <- function(S){
@@ -32,14 +32,14 @@ linearModell <- function(n, S, mu, eps) {
 #### Initialisierung globaler Variablen -----------------------------------
 
 randomseed <- 1
-samplesize.max <- 500
-iterations <- 100
-gridpoints <- 500               # Anzahl equidistanter Gitterpunkte
+samplesize.max <- 100
+iterations <- 250
+gridpoints <- 200               # Anzahl equidistanter Gitterpunkte
 
 alpha <- 0.05
 level <- 0                      # Grenzwert aus der Null-Hypothese
 S <- seq(0, 1, length.out = gridpoints)  # Grundmenge S = [0,1]
-partitions <- partition_seq(S, pieces = 2)  # Folge von Partitionen (degenerierend, feiner werdend)
+partitions <- partition_seq(S, pieces = 4)  # Folge von Partitionen (degenerierend, feiner werdend)
 
 
 #### Testfaelle generieren --------------------------------------------------
@@ -53,6 +53,7 @@ data.all <- foreach(i = 1:iterations) %dopar% {
     data.frame(linearModell(samplesize.max, S, mu, eps))
 }
 stopCluster(cluster)
+
 data.mu <- data.frame(S = S, Erwartungswert = mu(S))
 S0 = S[mu(S) > level]
 
@@ -83,23 +84,23 @@ cat("S0 nicht in U: ", length( S0[ !(S0 %in% U)] ) / length(S0),
 # 
 # autoplot(mbm)
 
-# samplesize.list <- c(10,50,100,200,500)
-# 
-# results <- sapply(samplesize.list, function(N) {
-#     cluster <- makeCluster(detectCores() - 1)
-#     registerDoParallel(cluster)
-#     results.U <-
-#         foreach(data = data.all, .export = ls(globalenv()), .packages = c("dplyr", "stats")) %dopar% {
-#             ConfSet(data[, 1:N], S, partitions, alpha, level)
-#         }
-#     stopCluster(cluster)
-# 
-#     fullcovered <-
-#         sapply(results.U, function(U)
-#             all(S[data.mu$Erwartungswert > level] %in% U))
-#     covering.rate <-
-#         length(fullcovered[fullcovered == T]) / length(fullcovered)
-# 
-# })
+samplesize.list <- c(10,50,100,200,500)
+
+results <- sapply(samplesize.list, function(N) {
+    cluster <- makeCluster(detectCores() - 1)
+    registerDoParallel(cluster)
+    results.U <-
+        foreach(data = data.all, .export = ls(globalenv()), .packages = c("dplyr", "stats")) %dopar% {
+            ConfSet(data[, 1:N], S, partitions, alpha, level, pmethod = "mboot")
+        }
+    stopCluster(cluster)
+
+    fullcovered <-
+        sapply(results.U, function(U)
+            all(S[data.mu$Erwartungswert > level] %in% U))
+    covering.rate <-
+        length(fullcovered[fullcovered == T]) / length(fullcovered)
+
+})
 
 

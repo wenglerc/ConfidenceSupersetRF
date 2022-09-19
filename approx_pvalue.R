@@ -62,29 +62,33 @@ tGKF <- function(S, data, level, basisEC = 1) {
     p0 * L0 + p1 * L1
 }
 
-# Multiplier Bootstrap -----------
-mBoot <- function(S, data, level, iter = 100) {
-    # Residuen
+mBoot <- function(S, data, level, iter = 1000) {
+    
     samplesize = ncol(data)
+    S.size = length(S)
+    
+    # Residuen
     residuals <-
-        sqrt(samplesize / (samplesize - 1)) * (data - rowSums(data) / samplesize)
+        sqrt(samplesize / (samplesize - 1)) * (data - rowSums(data) / samplesize) %>%
+        as.matrix()
     
     # Standardnormalverteilte Multiplier
-    g <- rnorm(samplesize * iter) %>% matrix(samplesize, iter)
+    g <- rnorm(samplesize * iter) %>%
+        array(c(samplesize, iter, S.size)) %>%
+        aperm(c(3, 1, 2))
     
-    # Approximation der bedingten Wahrscheinlichkeit der Summe gewichteter Residuen
-    cluster <- parallel::makeCluster(parallel::detectCores() - 1)
-    doParallel::registerDoParallel(cluster)
+    # Standardabweichung nach Anwendung der Multiplier
+    g.times.data <-
+        g * array(as.matrix(data), dim = c(dim(data), iter))
+    sd <- apply(g.times.data, c(1, 3), sd) %>%
+        array(c(dim(.), samplesize)) %>%
+        aperm(c(1, 3, 2))
     
-    mboot.distr <- foreach::foreach(i = 1:iter, .combine = "c") %dopar% {
-        # Standardabweichung nach Anwendung der Multiplier
-        sd.gX <- apply(t(t(data) * g[,i]), 1, sd)
-        # Maximum der Summen gewichteter Residuen über der Grundmenge
-        max(sqrt(samplesize) ^ (-1) * colSums(t(residuals / sd.gX) * g[,i]))
-    }
-    parallel::stopCluster(cluster)
+    # Maximum der Summen gewichteter Residuen über der Grundmenge
+    mboot.distr <- ( g * array(residuals, dim = c(dim(residuals), iter)) /
+                         sd / sqrt(samplesize)) %>%
+        apply(3, function(mat) max(rowSums(mat)) )
     
-    # TODO: Richtigkeit checken
     length(mboot.distr[mboot.distr >= level]) / length(mboot.distr)
     
 }
@@ -121,7 +125,7 @@ ConfSet <- function(data,
     samplesize <- ncol(data)
     t.statistic <- - sqrt(samplesize) * (rowSums(data)/samplesize - level) / apply(data, 1, sd)
     
-    U <- c()
+    U <- rep(NA, length(S))
 
     # Aussere Schleife: Loop über die Folge an Partitionen ----
     for (partS in partitions) {
@@ -135,8 +139,7 @@ ConfSet <- function(data,
         # Innere Schleife: Berechnung von U_n nach Partition partS^*_n ----
         
         # Berechnung und Sortierung der realisierten Werte der Teststatistik
-        teststatistics <- lapply(partS, function(vec) t.statistic[S %in% vec] %>% max()) %>%
-            unlist()
+        teststatistics <- sapply(partS, function(vec) t.statistic[S %in% vec] %>% max())
         sortorder <- order(teststatistics, decreasing = T)
         teststatistics <- sort(teststatistics, decreasing = T)
         
@@ -148,29 +151,36 @@ ConfSet <- function(data,
 
         # Berechnung der p-Werte
         accept.index = 1
-        for (i in N:1) {
-            if (pmethod == "tgkf") {
+        if (pmethod == "tgkf") {
+            for (i in N:1) {
                 pvalue <- tGKF(sortedUnions[[i]],
                                data[S %in% sortedUnions[[i]], ],
                                teststatistics[i],
                                basisEC = 1) %>% unname()
-            } else if (pmethod == "mboot") {
+                # Akzeptiere V_k, wenn p(x_k, V_k) >= alpha
+                if (pvalue < alpha) {
+                    accept.index <- ifelse(i == N, 0, i + 1)
+                    break
+                }
+            }
+        } else if (pmethod == "mboot") {
+            for (i in N:1) {
                 pvalue <- mBoot(sortedUnions[[i]],
                                 data[S %in% sortedUnions[[i]], ],
                                 teststatistics[i]) %>% unname()
-            }
-            
-            # Akzeptiere V_k, wenn p(x_k, V_k) >= alpha
-            if (pvalue < alpha) {
-                accept.index <- ifelse(i == N, 0, i + 1)
-                break
+                # Akzeptiere V_k, wenn p(x_k, V_k) >= alpha
+                if (pvalue < alpha) {
+                    accept.index <- ifelse(i == N, 0, i + 1)
+                    break
+                }
             }
         }
-
+        
         # Erweitere U_n = U_{n-1} + V_k
-        if (accept.index > 0) U <- sort(union(U, sortedUnions[[accept.index]]))
+        if (accept.index > 0) U <- union(U, sortedUnions[[accept.index]])
 
     }
+    
+    sort(U)
 
-    return(U)
 }
