@@ -4,9 +4,10 @@ require(tidyverse)
 require(reshape2)
 require(ggplot2)
 require(doParallel)
-require(microbenchmark)
 
-library(tictoc)
+library(microbenchmark)
+
+source("approx_pvalue.R")
 
 theme_set(theme_light())
 
@@ -28,14 +29,13 @@ linearModell <- function(n, S, mu, eps) {
     mu(S) + sigma(S) * t(mvtnorm::rmvnorm(n, sigma = eps(S)))
 } # Lineares Modell
 
-
 # HAUPTTEIL: Beispielhafter Durchlauf aller Funktionen --------------------
 
 #### Initialisierung globaler Variablen -----------------------------------
 
-randomseed <- 1
-samplesize.max <- 100
-iterations <- 100
+# randomseed <- 1
+samplesize.max <- 500
+iterations <- 1000
 gridpoints <- 200               # Anzahl equidistanter Gitterpunkte
 
 alpha <- 0.05
@@ -55,6 +55,7 @@ data.all <- foreach(i = 1:iterations) %dopar% {
     data.frame(linearModell(samplesize.max, S, mu, eps))
 }
 stopCluster(cluster)
+rm(cluster)
 
 data.mu <- data.frame(S = S, Erwartungswert = mu(S))
 S0 = S[mu(S) > level]
@@ -74,20 +75,20 @@ p.ex + geom_line(data = data.plot, aes(S, Wert, colour = Sample), alpha = 0.5) +
 
 #### Konstruktion --------------------------------------------------
 
-# U <- ConfSet(data.all[[3]], S, partitions, alpha, level, pmethod = "mboot")
+# U <- ConfSet(data.all[[1]], S, partitions, alpha, level, pmethod = "mboot")
 # cat("S0 nicht in U: ", length( S0[ !(S0 %in% U)] ) / length(S0),
 #     "\nU nicht in S0: ", length( U[ !(U %in% S0)] ) / length(U))
 # 
-# U <- ConfSet2(data.all[[3]], S, partitions, alpha, level, pmethod = "mboot")
+# U <- ConfSet2(data.all[[1]], S, partitions, alpha, level, pmethod = "mboot")
 # cat("S0 nicht in U: ", length( S0[ !(S0 %in% U)] ) / length(S0),
 #     "\nU nicht in S0: ", length( U[ !(U %in% S0)] ) / length(U))
-
-mbm <- microbenchmark(
-    V1 = ConfSet(data.all[[1]], S, partitions, alpha, level, pmethod = "mboot"),
-    V2 = ConfSet2(data.all[[1]], S, partitions, alpha, level, pmethod = "mboot"),
-    times = 5
-)
-autoplot(mbm)
+# 
+# mbm <- microbenchmark(
+#     V1 = ConfSet(data.all[[1]], S, partitions, alpha, level, pmethod = "mboot"),
+#     V2 = ConfSet2(data.all[[1]], S, partitions, alpha, level, pmethod = "gkf"),
+#     times = 25
+# )
+# autoplot(mbm)
 
 samplesize.list <- c(20,50,100,200,500)
 
@@ -109,39 +110,39 @@ results.gkf <- sapply(samplesize.list, function(N) {
 
 })
 toc()
-
-tic("MBoot")
-results.mb <- sapply(samplesize.list, function(N) {
-    cluster <- makeCluster(detectCores() - 1)
-    registerDoParallel(cluster)
-    results.U <-
-        foreach(data = data.all, .export = ls(globalenv()), .packages = c("dplyr", "stats")) %dopar% {
-            ConfSet(data[, 1:N], S, partitions, alpha, level, pmethod = "mboot")
-        }
-    stopCluster(cluster)
-    
-    fullcovered <-
-        sapply(results.U, function(U)
-            all(S[data.mu$Erwartungswert > level] %in% U))
-    covering.rate <-
-        length(fullcovered[fullcovered == T]) / length(fullcovered)
-    
-})
-toc()
-
-#### Auswertung --------------------------------------------------
-
-df.gkf <- data.frame(samplesize = samplesize.list,
-                     res = results.gkf, method = "t-GKF")
-# df.mb <- data.frame(samplesize = samplesize.list,
-#                     res = results.mb, method = "Multiplier Bootstrap")
-# data.plot <- rbind(df.gkf, df.mb)
-
-ggplot(data = df.gkf, aes(x = samplesize, y = res, color = method)) +
-    labs(x = "Anzahl an Samples", y = "Überdeckungsrate", color = "Methode") +
-    theme(legend.position = "top") +
-    geom_line() + geom_point() +
-    geom_hline(yintercept = 1 - alpha, linetype = 'dashed', col = 'red')
-
-
-
+# 
+# tic("MBoot")
+# results.mb <- sapply(samplesize.list, function(N) {
+#     cluster <- makeCluster(detectCores() - 1)
+#     registerDoParallel(cluster)
+#     results.U <-
+#         foreach(data = data.all, .export = ls(globalenv()), .packages = c("dplyr", "stats")) %dopar% {
+#             ConfSet(data[, 1:N], S, partitions, alpha, level, pmethod = "mboot")
+#         }
+#     stopCluster(cluster)
+#     
+#     fullcovered <-
+#         sapply(results.U, function(U)
+#             all(S[data.mu$Erwartungswert > level] %in% U))
+#     covering.rate <-
+#         length(fullcovered[fullcovered == T]) / length(fullcovered)
+#     
+# })
+# toc()
+# 
+# #### Auswertung --------------------------------------------------
+# 
+# df.gkf <- data.frame(samplesize = samplesize.list,
+#                      res = results.gkf, method = "t-GKF")
+# # df.mb <- data.frame(samplesize = samplesize.list,
+# #                     res = results.mb, method = "Multiplier Bootstrap")
+# # data.plot <- rbind(df.gkf, df.mb)
+# 
+# ggplot(data = df.gkf, aes(x = samplesize, y = res, color = method)) +
+#     labs(x = "Anzahl an Samples", y = "Überdeckungsrate", color = "Methode") +
+#     theme(legend.position = "top") +
+#     geom_line() + geom_point() +
+#     geom_hline(yintercept = 1 - alpha, linetype = 'dashed', col = 'red')
+# 
+# 
+# 
